@@ -1,116 +1,87 @@
 import socket
 import threading
+import time
+from datetime import datetime
 
-PORT = 5050
-SERVER = "localhost"
+PORT = 5051
+SERVER = "127.0.0.1"
 ADDR = (SERVER, PORT)
 FORMAT = "utf-8"
 DISCONNECT_MESSAGE = "!DISCONNECT"
+RECONNECT_DELAY = 5  # Seconds before retrying to connect
 
-def receive_messages(client_socket):
-    """Continuously listen for incoming messages."""
-    while True:
-        try:
-            msg = client_socket.recv(1024).decode(FORMAT)
-            if not msg:
-                break
-            print(f"\n[Message Received] {msg}")
-        except:
-            print("[ERROR] Connection lost.")
-            break
+def get_current_time():
+    """Returns the current time formatted as a string."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def connect_to_server():
-    """Connect to the server."""
+def connect():
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         client.connect(ADDR)
-        print("Connected to server.")
     except Exception as e:
-        print(f"[ERROR] {e}")
+        print(f"[ERROR] Connection failed: {e}")
         return None
     return client
 
-def send_to_server(client, msg):
-    message = msg.encode(FORMAT)
-    client.send(message)
+def send(client, msg):
+    try:
+        message = msg.encode(FORMAT)
+        client.sendall(message)
+    except Exception as e:
+        print(f"[ERROR] Failed to send message: {e}")
 
-def client_to_client(selected_client, target_client, client_socket):
-    """Handles client-to-client communication."""
-    print(f"\n[Client {selected_client}] Chatting with {target_client}...")
-
-    threading.Thread(target=receive_messages, args=(client_socket,)).start()
-
+def receive(client):
     while True:
-        msg = input(f"Message to {target_client} (q to quit): ")
-        if msg.lower() == 'q':
+        try:
+            message = client.recv(1024).decode(FORMAT)
+            if message:
+                print(f"\r\033[1;32m{message}\n\033[1;37m{username}: \033[0m", end="", flush=True)  # Green for received messages
+        except Exception as e:
+            print(f"[ERROR] {e}")
             break
 
-        # Send message to target client via the server
-        full_msg = f"{target_client}:{msg}"
-        send_to_server(client_socket, full_msg)
-
-    # Ask what to do next
-    next_action(client_socket, selected_client)
-
-def next_action(client_socket, selected_client):
+def reconnect():
+    """Attempts to reconnect the client if disconnected."""
     while True:
-        action = input("Do you want to continue chatting with another client, the server, or quit? (c/s/q): ").lower()
-        if action == 'c':
-            target_client = input(f"Which client would you like to chat with? ({', '.join(clients)}): ")
-            if target_client in clients:
-                client_to_client(selected_client, target_client, client_socket)
-            else:
-                print("[ERROR] Invalid client selection. Please try again.")
-        elif action == 's':
-            chat_with_server(client_socket, selected_client)  # Pass selected_client here
-        elif action == 'q':
-            send_to_server(client_socket, DISCONNECT_MESSAGE)
-            print("Disconnected from the server.")
-            break
-        else:
-            print("[ERROR] Invalid selection. Please choose 'c' for client, 's' for server, or 'q' to quit.")
-
-def chat_with_server(client_socket, selected_client):
-    while True:
-        msg = input("Enter a message for the server (q to quit): ")
-        if msg.lower() == 'q':
-            send_to_server(client_socket, DISCONNECT_MESSAGE)
-            print("Disconnected from the server.")
-            break
-        send_to_server(client_socket, msg)
-        print("[Message Sent] Server acknowledged your message.")
-
-    next_action(client_socket, selected_client)
+        print(f"\033[1;33mReconnecting in {RECONNECT_DELAY} seconds...\033[0m")  # Yellow for reconnecting message
+        time.sleep(RECONNECT_DELAY)
+        connection = connect()
+        if connection:
+            send(connection, username)
+            return connection
 
 def start():
-    create_clients = int(input("How many clients would you like to create? "))
-    global clients
-    clients = [f"Client {i+1}" for i in range(create_clients)]
-    print(f"\nClients created: {', '.join(clients)}")
+    global username
+    username = input('\033[1;36mEnter your username: \033[0m')  # Cyan for username input
+    answer = input(f'\033[1;36mConnect as {username}? (yes/no): \033[0m')
+    if answer.lower() != 'yes':
+        return
+
+    connection = connect()
+    if not connection:
+        connection = reconnect()
+
+    send(connection, username)
+
+    # Start a thread to handle incoming messages
+    receive_thread = threading.Thread(target=receive, args=(connection,))
+    receive_thread.daemon = True
+    receive_thread.start()
 
     while True:
-        connection_type = input("Do you want to connect with the server or a client? (s/c): ").lower()
+        msg = input(f"\033[1;37m{username}: \033[0m")  # White for user input
 
-        if connection_type == "s":
-            connection = connect_to_server()
-            if connection is None:
-                return
-            chat_with_server(connection, "Server")
+        if msg.lower() == 'q':
+            send(connection, DISCONNECT_MESSAGE)
+            break
 
-        elif connection_type == "c":
-            connection = connect_to_server()
-            if connection is None:
-                return
-
-            selected_client = input("Enter your client name: ")
-            send_to_server(connection, selected_client)
-
-            target_client = input(f"Which client would you like to chat with? ({', '.join(clients)}): ")
-            if target_client in clients:
-                client_to_client(selected_client, target_client, connection)
-            else:
-                print("[ERROR] Invalid client selection. Please try again.")
+        if msg.startswith("@"):
+            # Private message to a specific user
+            send(connection, msg)
         else:
-            print("[ERROR] Invalid selection. Please choose 's' for server or 'c' for client.")
+            send(connection, msg)
+
+    print('\033[1;31mDisconnected\033[0m')  # Red for disconnected message
+    connection.close()
 
 start()
